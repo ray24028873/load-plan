@@ -1,0 +1,1342 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LOAD PLAN 貨櫃裝載計劃產生器</title>
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 引入 html2pdf.js 用於一鍵直接下載 PDF -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <!-- 引入 Google Fonts Inter & Noto Sans TC -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+    
+    <style>
+        body {
+            font-family: 'Inter', 'Noto Sans TC', sans-serif;
+            background-color: #f1f5f9;
+        }
+
+        /* A4 橫向比例容器 (297mm x 210mm = 1.4142 : 1) */
+        /* 使用固定像素寬度 1122px x 793px (對應 96 DPI 下的標準 A4 Landscape)，確保轉成 PDF 100% 精準不跑版 */
+        .a4-landscape-sheet {
+            width: 1122px;
+            height: 793px;
+            background-color: #ffffff;
+            color: #000000;
+            box-sizing: border-box;
+            padding: 48px 56px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            position: relative;
+            transform-origin: top left;
+        }
+
+        /* 每個顏色區塊中間的灰色虛線分隔 (除了第一個區塊以外，左邊加上灰色虛線) */
+        .cargo-block + .cargo-block {
+            border-left: 4px dashed #6b7280;
+        }
+
+        /* 櫃門雙開門把視覺裝飾 (高對比黑白線條) */
+        .container-door-indication {
+            border-right: 10px double #000000;
+        }
+
+        /* 直向文字排版模式：改用純 transform: rotate(-90deg)，徹底解決 html2canvas 輸出 PDF 時因不支援 writing-mode 導致字母倒轉的 Bug */
+        .vertical-rotated-line {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) rotate(-90deg);
+            white-space: nowrap;
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* 原生列印備用樣式 */
+        @media print {
+            @page {
+                size: A4 landscape;
+                margin: 0;
+            }
+            body {
+                background: #ffffff;
+                margin: 0;
+                padding: 0;
+            }
+            .no-print {
+                display: none !important;
+            }
+            #preview-wrapper {
+                padding: 0 !important;
+                margin: 0 !important;
+                overflow: visible !important;
+                box-shadow: none !important;
+                height: auto !important;
+            }
+            #a4-sheet {
+                transform: none !important;
+                box-shadow: none !important;
+                width: 100vw !important;
+                height: 100vh !important;
+            }
+        }
+    </style>
+</head>
+<body class="min-h-screen text-slate-800 flex flex-col">
+
+    <!-- 頂部導覽列 -->
+    <header class="no-print bg-slate-900 text-white shadow-md px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-3">
+            <div class="bg-white text-slate-900 font-black px-2.5 py-1 rounded text-sm tracking-wider">A4 橫向</div>
+            <h1 class="text-lg sm:text-xl font-bold tracking-tight">LOAD PLAN 貨櫃裝載計劃產生器</h1>
+            <span id="db-sync-badge" class="text-xs px-2.5 py-1 rounded-full bg-slate-800 text-emerald-400 border border-slate-700 font-medium flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                <span>款號顏色庫就緒</span>
+            </span>
+        </div>
+        <div class="flex items-center gap-2.5 flex-wrap">
+            <button id="btn-manage-catalog" onclick="openCatalogModal()" class="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 text-sm font-bold border border-slate-700 transition flex items-center gap-1.5 cursor-pointer">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                </svg>
+                <span>管理 ITEM 顏色庫</span>
+            </button>
+            <button id="btn-toggle-orientation" onclick="cycleTextOrientation()" class="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium border border-slate-700 transition flex items-center gap-2 cursor-pointer">
+                <span class="text-xs bg-slate-700 px-1.5 py-0.5 rounded font-bold text-amber-300" id="orientation-mode-badge">自動防斷字</span>
+                <span>文字方向切換</span>
+            </button>
+            <button id="btn-toggle-guides" onclick="toggleContainerGuides()" class="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium border border-slate-700 transition flex items-center gap-2 cursor-pointer">
+                <span id="guide-status-dot" class="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+                <span>顯示英文方向標示 (INSIDE/DOOR)</span>
+            </button>
+            <button id="btn-download-pdf" onclick="downloadPDF()" class="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-bold text-sm shadow-lg shadow-blue-600/30 transition flex items-center gap-2 cursor-pointer">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                <span id="download-btn-text">一鍵下載 PDF 檔</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- 主內容區：左側輸入面板 + 右側 A4 即時預覽 -->
+    <main class="flex-1 flex flex-col xl:flex-row gap-6 p-4 sm:p-6 max-w-[1800px] w-full mx-auto">
+        
+        <!-- 左側：資料輸入與排序區 -->
+        <section class="no-print w-full xl:w-[440px] shrink-0 flex flex-col gap-4">
+            
+            <!-- 新增入櫃項目卡片 -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
+                <div class="flex items-center justify-between mb-3">
+                    <h2 class="text-base font-bold text-slate-900 flex items-center gap-2">
+                        <span class="w-6 h-6 rounded-full bg-slate-900 text-white text-xs flex items-center justify-center font-bold">1</span>
+                        輸入入櫃資料（依序由最裡面往櫃門排）
+                    </h2>
+                    <span class="text-xs font-medium text-slate-500 bg-slate-100 px-2 py-1 rounded">先入櫃 = 左側深處</span>
+                </div>
+
+                <form id="add-item-form" onsubmit="handleAddItem(event)" class="space-y-3.5">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <label for="input-order" class="block text-xs font-bold text-slate-700 uppercase tracking-wider">ORDER NO.</label>
+                                <button type="button" onclick="copyLastOrderNo()" class="text-[11px] text-blue-600 hover:text-blue-800 font-semibold cursor-pointer">
+                                    沿用上筆
+                                </button>
+                            </div>
+                            <input type="text" id="input-order" required placeholder="例如：PO-8801" 
+                                class="w-full px-3 py-2 rounded-lg border border-slate-300 focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 outline-none font-semibold text-slate-900 text-sm transition uppercase">
+                        </div>
+
+                        <div>
+                            <div class="flex items-center justify-between mb-1">
+                                <label for="input-item-no" class="block text-xs font-bold text-slate-700 uppercase tracking-wider">ITEM NO. (款號)</label>
+                                <button type="button" onclick="openCatalogModal()" class="text-[11px] text-amber-600 hover:text-amber-800 font-semibold cursor-pointer">
+                                    已存 <span id="saved-item-count">0</span> 款
+                                </button>
+                            </div>
+                            <input type="text" id="input-item-no" list="datalist-item-nos" required placeholder="選擇或輸入新 ITEM" 
+                                oninput="handleItemNoInput(this.value)"
+                                class="w-full px-3 py-2 rounded-lg border border-slate-300 focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 outline-none font-semibold text-slate-900 text-sm transition uppercase">
+                            <datalist id="datalist-item-nos"></datalist>
+                        </div>
+                    </div>
+
+                    <!-- 已儲存的 ITEM NO. 快速切換標籤 -->
+                    <div id="saved-items-bar" class="bg-slate-50 border border-slate-200/80 rounded-lg p-2.5">
+                        <div class="flex items-center justify-between mb-1.5">
+                            <span class="text-[11px] font-bold text-slate-500">已記憶的 ITEM NO.（點擊帶出專屬顏色）：</span>
+                        </div>
+                        <div id="saved-items-chips" class="flex flex-wrap gap-1.5">
+                            <!-- JS 動態產生 ITEM NO 按鈕 -->
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="flex items-center justify-between mb-1">
+                            <label for="input-color" class="block text-xs font-bold text-slate-700 uppercase tracking-wider">COLOR (英文顏色)</label>
+                            <span class="text-[11px] text-slate-400">新輸入顏色將自動記憶至該 ITEM</span>
+                        </div>
+                        <input type="text" id="input-color" list="datalist-item-colors" required placeholder="點選下方常用色，或輸入新顏色自動保存" 
+                            class="w-full px-3.5 py-2 rounded-lg border border-slate-300 focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 outline-none font-semibold text-slate-900 text-sm transition uppercase">
+                        <datalist id="datalist-item-colors"></datalist>
+
+                        <!-- 根據當前 ITEM NO 自動切換的專屬 COLOR 快速點選清單 -->
+                        <div id="item-color-picker" class="mt-2 bg-blue-50/70 border border-blue-200/80 rounded-lg p-2.5">
+                            <div class="flex items-center justify-between mb-1.5">
+                                <span id="color-picker-title" class="text-[11px] font-bold text-blue-900">
+                                    請先輸入或選擇 ITEM NO. 以顯示專屬顏色清單
+                                </span>
+                                <span class="text-[10px] text-blue-600 font-semibold">點擊顏色可直接入櫃或帶入</span>
+                            </div>
+                            <div id="item-color-chips" class="flex flex-wrap gap-1.5">
+                                <!-- JS 動態產生對應 ITEM 的顏色按鈕 -->
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 active:bg-black text-white font-bold rounded-lg text-sm transition flex items-center justify-center gap-2 shadow-sm cursor-pointer">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+                        </svg>
+                        加入貨櫃排序（並自動記憶 ITEM 顏色）
+                    </button>
+                </form>
+            </div>
+
+            <!-- 已輸入清單與順序管理卡片 -->
+            <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5 flex-1 flex flex-col">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-2">
+                        <span class="w-6 h-6 rounded-full bg-slate-900 text-white text-xs flex items-center justify-center font-bold">2</span>
+                        <h2 class="text-base font-bold text-slate-900">入櫃先後清單</h2>
+                        <span id="item-count-badge" class="text-xs font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">0 項</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button onclick="loadSampleData(5)" class="text-xs text-slate-500 hover:text-slate-800 font-medium underline cursor-pointer">5色範例</button>
+                        <span class="text-slate-300">|</span>
+                        <button onclick="loadSampleData(9)" class="text-xs text-slate-500 hover:text-slate-800 font-medium underline cursor-pointer">9色範例(自動直排)</button>
+                        <span class="text-slate-300">|</span>
+                        <button onclick="clearAllItems()" class="text-xs text-red-600 hover:text-red-700 font-semibold cursor-pointer">清空</button>
+                    </div>
+                </div>
+
+                <!-- 統計資訊列 -->
+                <div class="bg-slate-50 rounded-lg px-3.5 py-2 mb-3 border border-slate-200/80 flex items-center justify-between text-xs font-semibold text-slate-600">
+                    <span>順序 #1 = 最先入櫃 (INSIDE)</span>
+                    <span id="order-summary-badge">共 0 張單</span>
+                </div>
+
+                <!-- 列表容器 -->
+                <div id="items-list-container" class="space-y-2 max-h-[420px] overflow-y-auto pr-1 flex-1">
+                    <!-- 由 JavaScript 動態渲染 -->
+                </div>
+            </div>
+        </section>
+
+        <!-- 右側：A4 橫向即時預覽區 -->
+        <section class="flex-1 flex flex-col items-center">
+            <div class="no-print w-full flex items-center justify-between mb-2 px-1">
+                <span class="text-xs font-bold uppercase tracking-wider text-slate-500">
+                    A4 橫向即時預覽 (純英文輸出 • 自動防斷字排版)
+                </span>
+                <span class="text-xs text-slate-500">
+                    各顏色區塊依數量平均分配長短 • 超過 6 個區塊或字太長自動轉直向顯示
+                </span>
+            </div>
+
+            <!-- 自適應縮放外框：確保在筆電或手機螢幕上也能完整看到整張 A4 橫向頁面 -->
+            <div id="preview-wrapper" class="w-full bg-slate-300/70 rounded-xl p-3 sm:p-6 border border-slate-300 flex justify-center items-start overflow-hidden shadow-inner">
+                
+                <!-- 真正輸出成 PDF 的 A4 Landscape 畫布 (1122px x 793px) - 內部全面純英文 -->
+                <div id="a4-sheet" class="a4-landscape-sheet shadow-2xl">
+                    
+                    <!-- 上方：置中特大粗體 LOAD PLAN -->
+                    <div class="w-full text-center pt-2">
+                        <h1 class="text-[64px] leading-none font-black tracking-[0.08em] text-black select-none">
+                            LOAD PLAN
+                        </h1>
+                    </div>
+
+                    <!-- 中間偏下：長方形貨櫃視覺化區域 -->
+                    <div class="w-full my-auto flex flex-col justify-center">
+                        
+                        <!-- 貨櫃方位輔助標示（全英文，可透過頂部按鈕切換顯示/隱藏） -->
+                        <div id="container-guides-top" class="flex items-end justify-between mb-3 px-1 text-black">
+                            <div class="flex items-center gap-2">
+                                <span class="inline-block w-3 h-3 bg-black"></span>
+                                <span class="text-base font-black tracking-wider uppercase">◀ INSIDE (LOAD FIRST)</span>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-base font-black tracking-wider uppercase">DOOR (UNLOAD FIRST) ▶</span>
+                                <span class="inline-block w-3 h-3 border-2 border-black"></span>
+                            </div>
+                        </div>
+
+                        <!-- 長方形貨櫃本體 (厚重純黑邊框 + 內部各顏色等比例分割 + 灰色虛線分隔) -->
+                        <div id="container-box" class="w-full h-[450px] border-[6px] border-black bg-white flex flex-row items-stretch overflow-hidden relative">
+                            <!-- 由 JavaScript 根據顏色項目動態繪製區塊 -->
+                        </div>
+
+                        <!-- 貨櫃下方順序輔助說明（全英文，可透過頂部按鈕切換顯示/隱藏） -->
+                        <div id="container-guides-bottom" class="flex items-center justify-between mt-3 px-1 text-xs font-bold tracking-wider text-neutral-700 uppercase">
+                            <span>LOADING SEQUENCE: LEFT TO RIGHT (1 → N)</span>
+                            <span id="sheet-total-summary">TOTAL: 0 ORDERS / 0 COLORS</span>
+                        </div>
+
+                    </div>
+
+                    <!-- 底部留白平衡版面 -->
+                    <div class="h-4"></div>
+                </div>
+
+            </div>
+        </section>
+
+    </main>
+
+    <!-- ITEM NO. 與專屬 COLOR 資料庫管理彈窗 -->
+    <div id="catalog-modal" class="no-print fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 hidden items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden">
+            <div class="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
+                <div>
+                    <h3 class="text-base font-bold">ITEM NO. 專屬 COLOR 記憶庫管理</h3>
+                    <p class="text-xs text-slate-300 mt-0.5">預先建立或修改每個 ITEM NO. 對應的顏色清單，日後輸入免打字、零錯誤</p>
+                </div>
+                <button onclick="closeCatalogModal()" class="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+
+            <!-- 新增或擴充 ITEM NO 顏色表單 -->
+            <form onsubmit="handleSaveCatalogPreset(event)" class="p-4 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row gap-2.5">
+                <input type="text" id="preset-item-no" required placeholder="ITEM NO. (例: IT-101)" 
+                    class="sm:w-44 px-3 py-2 rounded-lg border border-slate-300 text-sm font-bold text-slate-900 uppercase outline-none focus:border-slate-900 bg-white">
+                <input type="text" id="preset-colors" required placeholder="輸入多個顏色，用逗號分隔 (例: BLACK, NAVY BLUE, WHITE)" 
+                    class="flex-1 px-3 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-900 uppercase outline-none focus:border-slate-900 bg-white">
+                <button type="submit" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-lg shrink-0 cursor-pointer transition">
+                    新增 / 儲存顏色
+                </button>
+            </form>
+
+            <!-- 已儲存的 ITEM 列表 -->
+            <div id="catalog-modal-list" class="p-5 overflow-y-auto space-y-3 flex-1">
+                <!-- 由 JavaScript 動態渲染 -->
+            </div>
+
+            <div class="px-6 py-3 bg-slate-100 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                    <button type="button" onclick="exportCatalogJSON()" class="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 text-xs font-bold rounded-lg cursor-pointer transition">
+                        ⬇ 匯出備份檔 (.json)
+                    </button>
+                    <label class="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 text-xs font-bold rounded-lg cursor-pointer transition">
+                        ⬆ 匯入備份檔
+                        <input type="file" accept=".json" onchange="importCatalogJSON(event)" class="hidden">
+                    </label>
+                </div>
+                <button onclick="closeCatalogModal()" class="px-4 py-1.5 bg-slate-900 text-white text-xs font-bold rounded-lg cursor-pointer">完成關閉</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 狀態提示 Toast (取代 alert) -->
+    <div id="toast-msg" class="fixed bottom-5 right-5 bg-slate-900 text-white px-4 py-3 rounded-xl shadow-xl text-sm font-semibold transition-all duration-300 opacity-0 pointer-events-none translate-y-2 z-50 flex items-center gap-2">
+        <span id="toast-text">已更新</span>
+    </div>
+
+    <!-- 引入 Firebase SDK 支援雲端永久保存 ITEM NO. 及其專屬 COLOR 清單 -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-load-plan-app';
+        let db = null;
+        let auth = null;
+        let currentUser = null;
+
+        async function initCloudCatalog() {
+            try {
+                if (typeof __firebase_config === 'undefined' || !__firebase_config) {
+                    return;
+                }
+                const firebaseConfig = JSON.parse(__firebase_config);
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    currentUser = user;
+                    if (!currentUser) return;
+
+                    const catalogDocRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'itemColorCatalog');
+                    onSnapshot(
+                        catalogDocRef,
+                        (snap) => {
+                            if (snap.exists() && snap.data().catalogJson) {
+                                try {
+                                    const cloudCatalog = JSON.parse(snap.data().catalogJson);
+                                    if (cloudCatalog && typeof cloudCatalog === 'object') {
+                                        window.mergeCloudCatalog(cloudCatalog);
+                                    }
+                                } catch (e) {
+                                    console.error('解析雲端 ITEM 顏色庫失敗:', e);
+                                }
+                            } else {
+                                // 首次使用時將預設款號顏色庫同步至雲端
+                                window.saveCatalogToCloud();
+                            }
+                        },
+                        (err) => {
+                            console.error('讀取雲端 ITEM 顏色庫錯誤:', err);
+                        }
+                    );
+                });
+            } catch (e) {
+                console.warn('雲端同步未啟用，使用記憶體模式:', e);
+            }
+        }
+
+        // 提供給全域呼叫的雲端儲存函式
+        window.saveCatalogToCloud = async function () {
+            if (!db || !currentUser || !window.itemColorCatalog) return;
+            try {
+                const catalogDocRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'itemColorCatalog');
+                await setDoc(catalogDocRef, {
+                    catalogJson: JSON.stringify(window.itemColorCatalog),
+                    updatedAt: Date.now()
+                });
+                const badge = document.getElementById('db-sync-badge');
+                if (badge) {
+                    badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>ITEM 顏色庫已自動保存</span>`;
+                }
+            } catch (err) {
+                console.error('儲存 ITEM 顏色庫失敗:', err);
+            }
+        };
+
+        initCloudCatalog();
+    </script>
+
+    <script>
+        const LOCAL_STORAGE_KEY = 'LOAD_PLAN_ITEM_COLOR_CATALOG_V1';
+
+        // 預設為空白記憶庫（若瀏覽器已有儲存紀錄則會在下方 loadCatalogFromLocal 自動載入）
+        window.itemColorCatalog = {};
+
+        // 啟動時優先從瀏覽器 localStorage 載入已保存的 ITEM NO. 顏色庫（獨立放上網或本機開啟皆可永久保存）
+        function loadCatalogFromLocal() {
+            try {
+                const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    if (parsed && typeof parsed === 'object') {
+                        // 自動清除舊版預設的範例款號 (IT-101, IT-205, IT-308)，保留使用者真實建立的款號
+                        delete parsed['IT-101'];
+                        delete parsed['IT-205'];
+                        delete parsed['IT-308'];
+                        // 載入時確保每個款號底下的顏色皆按 A-Z 排序
+                        Object.keys(parsed).forEach(k => {
+                            if (Array.isArray(parsed[k])) {
+                                parsed[k].sort((a, b) => a.localeCompare(b));
+                            }
+                        });
+                        window.itemColorCatalog = parsed;
+                    }
+                }
+            } catch (e) {
+                console.warn('讀取本機 localStorage 失敗:', e);
+            }
+        }
+
+        // 儲存至瀏覽器本機 localStorage 並同步雲端
+        function persistCatalogAll() {
+            try {
+                // 儲存前確保所有顏色按 A-Z 排序
+                Object.keys(window.itemColorCatalog).forEach(k => {
+                    if (Array.isArray(window.itemColorCatalog[k])) {
+                        window.itemColorCatalog[k].sort((a, b) => a.localeCompare(b));
+                    }
+                });
+                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(window.itemColorCatalog));
+                const badge = document.getElementById('db-sync-badge');
+                if (badge) {
+                    badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-400"></span><span>ITEM 顏色庫已自動保存</span>`;
+                }
+            } catch (e) {
+                console.warn('寫入本機 localStorage 失敗:', e);
+            }
+            if (typeof window.saveCatalogToCloud === 'function') {
+                window.saveCatalogToCloud();
+            }
+        }
+
+        loadCatalogFromLocal();
+
+        // 預設將入櫃先後清單清空，打開網頁即可直接輸入，不需手動清空
+        let loadItems = [];
+
+        // 是否在 A4 紙上顯示英文「INSIDE / DOOR」輔助字樣
+        let showGuides = true;
+
+        // 文字方向模式：'auto' (自動偵測防斷字) | 'horizontal' (強制橫排自動縮放字級) | 'vertical' (強制直排)
+        let orientationMode = 'auto';
+
+        // 合併來自雲端保存的 ITEM NO. 顏色清單
+        window.mergeCloudCatalog = function (cloudData) {
+            Object.keys(cloudData).forEach(rawItem => {
+                const itemKey = rawItem.trim().toUpperCase();
+                if (!itemKey || itemKey === 'IT-101' || itemKey === 'IT-205' || itemKey === 'IT-308') return;
+                const existing = window.itemColorCatalog[itemKey] || [];
+                const merged = Array.from(new Set([...existing, ...(cloudData[rawItem] || []).map(c => c.trim().toUpperCase()).filter(Boolean)]));
+                merged.sort((a, b) => a.localeCompare(b));
+                window.itemColorCatalog[itemKey] = merged;
+            });
+            try {
+                localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(window.itemColorCatalog));
+            } catch (e) {}
+            renderCatalogUI();
+        };
+
+        // 將一筆 ITEM NO. 與 COLOR 記錄到記憶庫中並觸發保存（自動按 A-Z 排序）
+        function rememberItemAndColor(rawItemNo, rawColor) {
+            const itemNo = (rawItemNo || '').trim().toUpperCase();
+            const color = (rawColor || '').trim().toUpperCase();
+            if (!itemNo) return;
+
+            if (!window.itemColorCatalog[itemNo]) {
+                window.itemColorCatalog[itemNo] = [];
+            }
+            if (color && !window.itemColorCatalog[itemNo].includes(color)) {
+                window.itemColorCatalog[itemNo].push(color);
+            }
+            window.itemColorCatalog[itemNo].sort((a, b) => a.localeCompare(b));
+
+            renderCatalogUI();
+            persistCatalogAll();
+        }
+
+        // 當使用者輸入或點選 ITEM NO. 時，即時更新對應的 COLOR 候選清單
+        function handleItemNoInput(val) {
+            const cleanItem = (val || '').trim().toUpperCase();
+            renderColorChoicesForItem(cleanItem);
+        }
+
+        // 點擊已記憶的 ITEM NO. 標籤
+        function selectSavedItemNo(itemNo) {
+            const itemInput = document.getElementById('input-item-no');
+            itemInput.value = itemNo;
+            renderColorChoicesForItem(itemNo);
+            renderCatalogUI();
+        }
+
+        // 點擊某個推薦 COLOR 標籤：若 ORDER NO 與 ITEM NO 已填好，直接填入 COLOR（或一鍵加入）
+        function pickSavedColor(color, quickAdd = false) {
+            const colorInput = document.getElementById('input-color');
+            colorInput.value = color;
+
+            const orderInput = document.getElementById('input-order');
+            const itemInput = document.getElementById('input-item-no');
+
+            // 若還沒有填 ORDER NO，自動沿用上一筆單號方便快速操作
+            if (!orderInput.value.trim() && loadItems.length > 0) {
+                orderInput.value = loadItems[loadItems.length - 1].orderNo;
+            }
+
+            if (quickAdd && orderInput.value.trim() && itemInput.value.trim()) {
+                handleAddItem(new Event('submit'));
+            } else {
+                colorInput.focus();
+            }
+        }
+
+        // 渲染左側表單中的 ITEM NO. 記憶標籤與 COLOR 專屬選單
+        function renderCatalogUI() {
+            const itemKeys = Object.keys(window.itemColorCatalog).sort();
+            document.getElementById('saved-item-count').textContent = itemKeys.length;
+
+            // 更新 ITEM NO. 的 <datalist>
+            const itemDatalist = document.getElementById('datalist-item-nos');
+            itemDatalist.innerHTML = itemKeys.map(k => `<option value="${escapeHtml(k)}">${window.itemColorCatalog[k].length} colors</option>`).join('');
+
+            // 更新已記憶的 ITEM NO. 快速按鈕列
+            const currentItemVal = (document.getElementById('input-item-no')?.value || '').trim().toUpperCase();
+            const chipsContainer = document.getElementById('saved-items-chips');
+
+            if (itemKeys.length === 0) {
+                chipsContainer.innerHTML = `<span class="text-xs text-slate-400">尚無已儲存的 ITEM NO.，輸入新資料後將自動記憶</span>`;
+            } else {
+                chipsContainer.innerHTML = itemKeys.map(itemKey => {
+                    const isSelected = itemKey === currentItemVal;
+                    const activeClass = isSelected
+                        ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                        : 'bg-white text-slate-700 border-slate-300 hover:border-slate-900 hover:text-slate-900';
+                    return `
+                        <button type="button" onclick="selectSavedItemNo('${escapeHtml(itemKey)}')"
+                            class="px-2.5 py-1 rounded-md border text-xs font-bold transition cursor-pointer flex items-center gap-1 ${activeClass}">
+                            <span>${escapeHtml(itemKey)}</span>
+                            <span class="text-[10px] opacity-70">(${window.itemColorCatalog[itemKey].length})</span>
+                        </button>
+                    `;
+                }).join('');
+            }
+
+            renderColorChoicesForItem(currentItemVal);
+            renderCatalogModalList();
+        }
+
+        // 根據目前選擇的 ITEM NO. 顯示該款號專屬的 COLOR 按鈕清單與下拉選單（按 A-Z 排序）
+        function renderColorChoicesForItem(itemNo) {
+            const cleanItem = (itemNo || '').trim().toUpperCase();
+            const colors = [...(window.itemColorCatalog[cleanItem] || [])].sort((a, b) => a.localeCompare(b));
+            const titleEl = document.getElementById('color-picker-title');
+            const chipsEl = document.getElementById('item-color-chips');
+            const colorDatalist = document.getElementById('datalist-item-colors');
+
+            colorDatalist.innerHTML = colors.map(c => `<option value="${escapeHtml(c)}"></option>`).join('');
+
+            if (!cleanItem) {
+                titleEl.textContent = '請先輸入或點選上方 ITEM NO.，以帶出對應顏色清單';
+                chipsEl.innerHTML = `<span class="text-xs text-blue-500/80">尚未指定 ITEM NO.</span>`;
+                return;
+            }
+
+            if (colors.length === 0) {
+                titleEl.textContent = `ITEM [${cleanItem}] 是新款號，請在上方輸入 COLOR，加入後將自動記憶！`;
+                chipsEl.innerHTML = `<span class="text-xs text-blue-600">此 ITEM 尚無已存顏色，輸入第一筆後即自動建立清單</span>`;
+                return;
+            }
+
+            titleEl.textContent = `ITEM [${cleanItem}] 的專屬顏色清單（A-Z 排序，點擊帶入，點「+入櫃」直接排入）：`;
+            chipsEl.innerHTML = colors.map(c => `
+                <div class="inline-flex items-center rounded-md bg-white border border-blue-300 shadow-2xs overflow-hidden hover:border-blue-600 transition">
+                    <button type="button" onclick="pickSavedColor('${escapeHtml(c)}', false)"
+                        title="點擊填入此顏色"
+                        class="px-2.5 py-1 text-xs font-extrabold text-slate-800 hover:bg-blue-50 cursor-pointer">
+                        ${escapeHtml(c)}
+                    </button>
+                    <button type="button" onclick="pickSavedColor('${escapeHtml(c)}', true)"
+                        title="直接將此顏色加入貨櫃排序"
+                        class="px-1.5 py-1 bg-blue-100 hover:bg-blue-600 hover:text-white text-blue-700 text-xs font-black border-l border-blue-200 cursor-pointer transition">
+                        +入櫃
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        // 開啟 / 關閉 ITEM 顏色記憶庫管理視窗
+        function openCatalogModal() {
+            renderCatalogModalList();
+            const modal = document.getElementById('catalog-modal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        function closeCatalogModal() {
+            const modal = document.getElementById('catalog-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        // 在管理視窗中批次新增 ITEM NO. 與多個顏色
+        function handleSaveCatalogPreset(e) {
+            e.preventDefault();
+            const itemInput = document.getElementById('preset-item-no');
+            const colorsInput = document.getElementById('preset-colors');
+
+            const itemNo = itemInput.value.trim().toUpperCase();
+            // 僅使用逗號 (, ，) 或頓號 (、) 分隔多個顏色，保留顏色名稱中的斜線 (如 S/CLR)
+            const colorList = colorsInput.value
+                .split(/[,，、]+/)
+                .map(s => s.trim().toUpperCase())
+                .filter(Boolean);
+
+            if (!itemNo || colorList.length === 0) {
+                showToast('請輸入 ITEM NO. 及至少一種顏色');
+                return;
+            }
+
+            if (!window.itemColorCatalog[itemNo]) {
+                window.itemColorCatalog[itemNo] = [];
+            }
+
+            colorList.forEach(c => {
+                if (!window.itemColorCatalog[itemNo].includes(c)) {
+                    window.itemColorCatalog[itemNo].push(c);
+                }
+            });
+            window.itemColorCatalog[itemNo].sort((a, b) => a.localeCompare(b));
+
+            itemInput.value = '';
+            colorsInput.value = '';
+            renderCatalogUI();
+            persistCatalogAll();
+            showToast(`已儲存 ITEM [${itemNo}] 共 ${window.itemColorCatalog[itemNo].length} 種顏色 (已按 A-Z 排序)`);
+        }
+
+        // 從記憶庫中刪除某個顏色或整筆 ITEM NO.
+        function removeCatalogColor(itemNo, colorName) {
+            if (!window.itemColorCatalog[itemNo]) return;
+            window.itemColorCatalog[itemNo] = window.itemColorCatalog[itemNo].filter(c => c !== colorName);
+            renderCatalogUI();
+            persistCatalogAll();
+        }
+
+        function deleteCatalogItem(itemNo) {
+            delete window.itemColorCatalog[itemNo];
+            renderCatalogUI();
+            persistCatalogAll();
+            showToast(`已刪除 ITEM [${itemNo}]`);
+        }
+
+        // 匯出 ITEM 顏色庫備份檔 (.json)，方便跨電腦轉移資料
+        function exportCatalogJSON() {
+            const dataStr = JSON.stringify(window.itemColorCatalog, null, 2);
+            const blob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'ITEM_COLOR_BACKUP.json';
+            a.click();
+            URL.revokeObjectURL(url);
+            showToast('已匯出 ITEM 顏色庫備份檔');
+        }
+
+        // 匯入 ITEM 顏色庫備份檔 (.json)
+        function importCatalogJSON(event) {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const imported = JSON.parse(e.target.result);
+                    if (imported && typeof imported === 'object') {
+                        window.mergeCloudCatalog(imported);
+                        persistCatalogAll();
+                        showToast('成功匯入並合併 ITEM 顏色庫！');
+                    }
+                } catch (err) {
+                    showToast('備份檔格式錯誤，無法匯入');
+                }
+            };
+            reader.readAsText(file);
+            event.target.value = '';
+        }
+
+        // 渲染管理彈窗內的 ITEM NO. 與對應顏色列表
+        function renderCatalogModalList() {
+            const container = document.getElementById('catalog-modal-list');
+            if (!container) return;
+            const keys = Object.keys(window.itemColorCatalog).sort();
+
+            if (keys.length === 0) {
+                container.innerHTML = `<div class="text-center py-8 text-slate-400 text-sm">目前尚無已儲存的 ITEM NO. 資料</div>`;
+                return;
+            }
+
+            container.innerHTML = keys.map(itemNo => {
+                const colors = [...(window.itemColorCatalog[itemNo] || [])].sort((a, b) => a.localeCompare(b));
+                return `
+                    <div class="bg-white border border-slate-200 rounded-xl p-3.5 shadow-2xs flex flex-col gap-2">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-2">
+                                <span class="px-2.5 py-0.5 bg-slate-900 text-white rounded text-xs font-black tracking-wider">${escapeHtml(itemNo)}</span>
+                                <span class="text-xs text-slate-500 font-semibold">共 ${colors.length} 種顏色</span>
+                            </div>
+                            <button type="button" onclick="deleteCatalogItem('${escapeHtml(itemNo)}')" class="text-xs text-red-500 hover:text-red-700 font-bold cursor-pointer">
+                                刪除此款號
+                            </button>
+                        </div>
+                        <div class="flex flex-wrap gap-1.5 pt-1">
+                            ${colors.map(c => `
+                                <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 text-slate-800 text-xs font-bold border border-slate-200">
+                                    ${escapeHtml(c)}
+                                    <button type="button" onclick="removeCatalogColor('${escapeHtml(itemNo)}', '${escapeHtml(c)}')" class="text-slate-400 hover:text-red-600 font-black cursor-pointer">×</button>
+                                </span>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // 顯示無干擾提示訊息
+        function showToast(message) {
+            const toast = document.getElementById('toast-msg');
+            const text = document.getElementById('toast-text');
+            text.textContent = message;
+            toast.classList.remove('opacity-0', 'translate-y-2');
+            toast.classList.add('opacity-100', 'translate-y-0');
+            clearTimeout(window.toastTimer);
+            window.toastTimer = setTimeout(() => {
+                toast.classList.remove('opacity-100', 'translate-y-0');
+                toast.classList.add('opacity-0', 'translate-y-2');
+            }, 2400);
+        }
+
+        // 切換文字排版方向模式 (自動 / 強制直向 / 強制橫向)
+        function cycleTextOrientation() {
+            const modes = ['auto', 'vertical', 'horizontal'];
+            const labels = {
+                'auto': '自動防斷字',
+                'vertical': '強制直向顯示',
+                'horizontal': '強制橫向縮放'
+            };
+            const nextIndex = (modes.indexOf(orientationMode) + 1) % modes.length;
+            orientationMode = modes[nextIndex];
+            document.getElementById('orientation-mode-badge').textContent = labels[orientationMode];
+            renderA4Preview();
+            showToast(`已切換文字排版模式：${labels[orientationMode]}`);
+        }
+
+        // 沿用上一筆 ORDER NO. 與 ITEM NO.
+        function copyLastOrderNo() {
+            if (loadItems.length === 0) {
+                showToast('目前清單中還沒有上一筆單號可沿用');
+                return;
+            }
+            const lastItem = loadItems[loadItems.length - 1];
+            document.getElementById('input-order').value = lastItem.orderNo;
+            if (lastItem.itemNo) {
+                document.getElementById('input-item-no').value = lastItem.itemNo;
+                handleItemNoInput(lastItem.itemNo);
+            }
+            document.getElementById('input-color').focus();
+        }
+
+        // 新增一筆項目（同時自動保存 ITEM NO 及其 COLOR）
+        function handleAddItem(e) {
+            if (e && e.preventDefault) e.preventDefault();
+            const orderInput = document.getElementById('input-order');
+            const itemNoInput = document.getElementById('input-item-no');
+            const colorInput = document.getElementById('input-color');
+
+            const orderNo = orderInput.value.trim().toUpperCase();
+            const itemNo = itemNoInput.value.trim().toUpperCase();
+            const color = colorInput.value.trim().toUpperCase();
+
+            if (!orderNo || !itemNo || !color) {
+                showToast('請輸入完整的 ORDER NO.、ITEM NO. 及 COLOR');
+                return;
+            }
+
+            // 自動將此 ITEM NO. 與 COLOR 組合儲存至記憶庫
+            rememberItemAndColor(itemNo, color);
+
+            loadItems.push({
+                id: 'item-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+                orderNo,
+                itemNo,
+                color
+            });
+
+            // 保留 ORDER NO. 與 ITEM NO. 方便同款連續點選其他顏色，僅清空 COLOR
+            orderInput.value = orderNo;
+            itemNoInput.value = itemNo;
+            colorInput.value = '';
+            colorInput.focus();
+
+            renderAll();
+            showToast(`已加入並記憶：${orderNo} / ${itemNo} - ${color}`);
+        }
+
+        // 刪除指定項目
+        function removeItem(index) {
+            loadItems.splice(index, 1);
+            renderAll();
+        }
+
+        // 上移 / 下移項目順序
+        function moveItem(index, direction) {
+            const targetIndex = index + direction;
+            if (targetIndex < 0 || targetIndex >= loadItems.length) return;
+            const temp = loadItems[index];
+            loadItems[index] = loadItems[targetIndex];
+            loadItems[targetIndex] = temp;
+            renderAll();
+        }
+
+        // 直接在清單內即時修改欄位（單號、款號、顏色）
+        function updateItemField(index, field, value) {
+            const cleanVal = value.toUpperCase();
+            loadItems[index][field] = cleanVal;
+            if (field === 'itemNo' || field === 'color') {
+                rememberItemAndColor(loadItems[index].itemNo, loadItems[index].color);
+            }
+            renderA4Preview();
+            updateSummaryBadges();
+        }
+
+        // 清空所有項目
+        function clearAllItems() {
+            loadItems = [];
+            renderAll();
+            showToast('已清空所有入櫃項目（ITEM 顏色記憶庫仍安全保留）');
+        }
+
+        // 載入範例資料 (支援 5 色標準範例 或 9 色多資料範例)
+        function loadSampleData(count = 5) {
+            if (count === 9) {
+                loadItems = [
+                    { id: 'item-1', orderNo: 'PO-8801', itemNo: 'IT-101', color: 'BLACK' },
+                    { id: 'item-2', orderNo: 'PO-8801', itemNo: 'IT-101', color: 'NAVY BLUE' },
+                    { id: 'item-3', orderNo: 'PO-8801', itemNo: 'IT-101', color: 'WHITE' },
+                    { id: 'item-4', orderNo: 'PO-8802', itemNo: 'IT-205', color: 'HEATHER GREY' },
+                    { id: 'item-5', orderNo: 'PO-8802', itemNo: 'IT-205', color: 'OLIVE GREEN' },
+                    { id: 'item-6', orderNo: 'PO-8802', itemNo: 'IT-205', color: 'BURGUNDY' },
+                    { id: 'item-7', orderNo: 'PO-8803', itemNo: 'IT-308', color: 'ROYAL BLUE' },
+                    { id: 'item-8', orderNo: 'PO-8803', itemNo: 'IT-308', color: 'OFF WHITE' },
+                    { id: 'item-9', orderNo: 'PO-8803', itemNo: 'IT-308', color: 'FOREST GREEN' }
+                ];
+                showToast('已載入 9 色範例（自動轉為直向顯示避免英文字斷開）');
+            } else {
+                loadItems = [
+                    { id: 'item-1', orderNo: 'PO-8801', itemNo: 'IT-101', color: 'BLACK' },
+                    { id: 'item-2', orderNo: 'PO-8801', itemNo: 'IT-101', color: 'NAVY BLUE' },
+                    { id: 'item-3', orderNo: 'PO-8801', itemNo: 'IT-101', color: 'WHITE' },
+                    { id: 'item-4', orderNo: 'PO-8802', itemNo: 'IT-205', color: 'HEATHER GREY' },
+                    { id: 'item-5', orderNo: 'PO-8802', itemNo: 'IT-205', color: 'BURGUNDY' }
+                ];
+                showToast('已載入 5 色範例資料');
+            }
+            renderAll();
+        }
+
+        // 切換是否顯示貨櫃方向輔助字樣
+        function toggleContainerGuides() {
+            showGuides = !showGuides;
+            const dot = document.getElementById('guide-status-dot');
+            const topGuide = document.getElementById('container-guides-top');
+            const bottomGuide = document.getElementById('container-guides-bottom');
+
+            if (showGuides) {
+                dot.classList.remove('bg-slate-500');
+                dot.classList.add('bg-emerald-400');
+                topGuide.style.visibility = 'visible';
+                bottomGuide.style.visibility = 'visible';
+            } else {
+                dot.classList.remove('bg-emerald-400');
+                dot.classList.add('bg-slate-500');
+                topGuide.style.visibility = 'hidden';
+                bottomGuide.style.visibility = 'hidden';
+            }
+            renderA4Preview();
+        }
+
+        // 更新統計與項目數量標籤
+        function updateSummaryBadges() {
+            const uniqueOrders = new Set(loadItems.map(i => i.orderNo.trim()).filter(Boolean)).size;
+            const uniqueItems = new Set(loadItems.map(i => (i.itemNo || '').trim()).filter(Boolean)).size;
+            document.getElementById('item-count-badge').textContent = `${loadItems.length} 項`;
+            document.getElementById('order-summary-badge').textContent = `共 ${uniqueOrders} 張單 / ${uniqueItems} 款 ITEM / ${loadItems.length} 個區塊`;
+            document.getElementById('sheet-total-summary').textContent = 
+                `TOTAL: ${uniqueOrders} ${uniqueOrders === 1 ? 'ORDER' : 'ORDERS'} / ${uniqueItems} ${uniqueItems === 1 ? 'ITEM' : 'ITEMS'} / ${loadItems.length} ${loadItems.length === 1 ? 'COLOR' : 'COLORS'}`;
+        }
+
+        // 渲染左側清單
+        function renderControlList() {
+            const container = document.getElementById('items-list-container');
+            updateSummaryBadges();
+
+            if (loadItems.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-10 px-4 border-2 border-dashed border-slate-200 rounded-xl text-slate-400 text-sm">
+                        目前尚無入櫃資料，請從上方選擇 ITEM NO. 及對應 COLOR 加入。
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = loadItems.map((item, idx) => {
+                const posLabel = idx === 0 ? 'INSIDE' : (idx === loadItems.length - 1 ? 'DOOR' : `SEQ ${idx + 1}`);
+                const itemColors = [...(window.itemColorCatalog[(item.itemNo || '').trim().toUpperCase()] || [])].sort((a, b) => a.localeCompare(b));
+                const datalistId = `row-color-list-${idx}`;
+
+                return `
+                    <div class="bg-slate-50 hover:bg-slate-100/80 border border-slate-200 rounded-lg p-2.5 flex items-center gap-2 transition">
+                        <div class="flex flex-col items-center justify-center min-w-[46px] px-1 py-1 bg-slate-900 text-white rounded text-center">
+                            <span class="text-xs font-black">#${idx + 1}</span>
+                            <span class="text-[10px] text-slate-300 leading-tight font-semibold">${posLabel}</span>
+                        </div>
+
+                        <div class="flex-1 grid grid-cols-12 gap-1.5 items-center">
+                            <div class="col-span-4">
+                                <label class="block text-[10px] text-slate-400 font-bold">ORDER NO.</label>
+                                <input type="text" value="${escapeHtml(item.orderNo)}" 
+                                    oninput="updateItemField(${idx}, 'orderNo', this.value)"
+                                    class="w-full bg-white border border-slate-200 rounded px-2 py-1 text-xs font-bold text-slate-900 focus:border-slate-900 outline-none uppercase">
+                            </div>
+                            <div class="col-span-4">
+                                <label class="block text-[10px] text-slate-400 font-bold">ITEM NO.</label>
+                                <input type="text" list="datalist-item-nos" value="${escapeHtml(item.itemNo || '')}" 
+                                    onchange="updateItemField(${idx}, 'itemNo', this.value); renderControlList();"
+                                    oninput="updateItemField(${idx}, 'itemNo', this.value)"
+                                    class="w-full bg-white border border-slate-200 rounded px-2 py-1 text-xs font-bold text-slate-900 focus:border-slate-900 outline-none uppercase">
+                            </div>
+                            <div class="col-span-4">
+                                <label class="block text-[10px] text-slate-400 font-bold">COLOR</label>
+                                <input type="text" list="${datalistId}" value="${escapeHtml(item.color)}" 
+                                    oninput="updateItemField(${idx}, 'color', this.value)"
+                                    class="w-full bg-white border border-slate-200 rounded px-2 py-1 text-xs font-bold text-slate-900 focus:border-slate-900 outline-none uppercase">
+                                <datalist id="${datalistId}">
+                                    ${itemColors.map(c => `<option value="${escapeHtml(c)}"></option>`).join('')}
+                                </datalist>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-col gap-1">
+                            <button type="button" onclick="moveItem(${idx}, -1)" ${idx === 0 ? 'disabled' : ''} 
+                                title="往裡面移 (更先入櫃)"
+                                class="p-1 rounded bg-white border border-slate-200 hover:bg-slate-200 disabled:opacity-30 text-slate-700 cursor-pointer">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7" />
+                                </svg>
+                            </button>
+                            <button type="button" onclick="moveItem(${idx}, 1)" ${idx === loadItems.length - 1 ? 'disabled' : ''} 
+                                title="往櫃門移 (更晚入櫃)"
+                                class="p-1 rounded bg-white border border-slate-200 hover:bg-slate-200 disabled:opacity-30 text-slate-700 cursor-pointer">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                                    <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+                                </svg>
+                            </button>
+                        </div>
+
+                        <button type="button" onclick="removeItem(${idx})" title="刪除此項目"
+                            class="p-1.5 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 transition cursor-pointer">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+                                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // 判斷單一單字最大長度（防止單一英文長字在橫排時被強行切斷）
+        function getMaxSingleWordLength(items) {
+            let maxLen = 0;
+            items.forEach(item => {
+                const words = `${item.orderNo} ${item.itemNo || ''} ${item.color}`.split(/\s+/);
+                words.forEach(w => {
+                    if (w.length > maxLen) maxLen = w.length;
+                });
+            });
+            return maxLen;
+        }
+
+        // 渲染右側 A4 橫向貨櫃預覽（100% 純英文 + 顯示 ORDER NO. / ITEM NO. / COLOR + 智慧防斷字排版）
+        function renderA4Preview() {
+            const containerBox = document.getElementById('container-box');
+
+            if (loadItems.length === 0) {
+                containerBox.innerHTML = `
+                    <div class="w-full h-full flex items-center justify-center text-neutral-400 text-2xl font-bold tracking-widest uppercase">
+                        PLEASE ENTER ORDER NO., ITEM NO. & COLOR
+                    </div>
+                `;
+                return;
+            }
+
+            const count = loadItems.length;
+            const maxWordLen = getMaxSingleWordLength(loadItems);
+            // 貨櫃總內部寬度約 1000px，計算每個區塊分配到的平均像素寬度
+            const approxColWidth = Math.floor(998 / count);
+
+            // 決定是否啟用「直向文字模式 (Vertical Mode)」以避免英文字斷開
+            let useVertical = false;
+            if (orientationMode === 'vertical') {
+                useVertical = true;
+            } else if (orientationMode === 'horizontal') {
+                useVertical = false;
+            } else {
+                // 自動模式：當區塊數量 >= 7，或者區塊寬度不足以容納最長英文單字時，自動轉為直向顯示
+                if (count >= 7 || (count >= 5 && maxWordLen >= 10) || (count >= 4 && maxWordLen >= 13)) {
+                    useVertical = true;
+                }
+            }
+
+            containerBox.innerHTML = loadItems.map((item, idx) => {
+                const itemMaxLen = Math.max(item.orderNo.length, (item.itemNo || '').length, item.color.length);
+                const totalChars = item.orderNo.length + (item.itemNo || '').length + item.color.length;
+
+                if (useVertical) {
+                    // 【直向單行排版】使用標準橫排 Flex 容器搭配 CSS rotate(-90deg)，徹底解決 html2canvas 轉 PDF 時將英文字母方向顛倒的問題！
+                    // 同時限制旋轉後的最大寬度 (355px)，確保絕不會壓到上方的圓圈序號！
+                    let orderFont = 'text-xl';
+                    let itemFont = 'text-xl';
+                    let colorFont = 'text-2xl';
+                    let labelFont = 'text-[10px]';
+                    let sepWidth = 'w-4';
+                    let gapClass = 'gap-2.5';
+
+                    if (totalChars > 24) {
+                        orderFont = 'text-sm';
+                        itemFont = 'text-sm';
+                        colorFont = 'text-base';
+                        labelFont = 'text-[8px]';
+                        sepWidth = 'w-2';
+                        gapClass = 'gap-1.5';
+                    } else if (totalChars > 16 || count >= 11) {
+                        orderFont = 'text-base';
+                        itemFont = 'text-base';
+                        colorFont = 'text-lg';
+                        labelFont = 'text-[9px]';
+                        sepWidth = 'w-3';
+                        gapClass = 'gap-2';
+                    }
+
+                    const badgeSize = count >= 12 ? 'w-7 h-7 text-xs' : 'w-8 h-8 text-sm';
+
+                    return `
+                        <div class="cargo-block h-full flex-1 flex flex-col items-center justify-between py-3 px-0.5 text-center select-none overflow-hidden">
+                            
+                            <!-- 上方：入櫃順序編號 -->
+                            <div class="w-full flex justify-center shrink-0 z-10 bg-white pb-1">
+                                <span class="inline-flex items-center justify-center ${badgeSize} rounded-full border-2 border-black text-black font-black">
+                                    ${idx + 1}
+                                </span>
+                            </div>
+
+                            <!-- 中間核心資訊：使用 rotate(-90deg) 由下往上單行直排，PDF 輸出字母 100% 正確不倒轉 -->
+                            <div class="relative flex-1 w-full overflow-hidden">
+                                <div class="vertical-rotated-line ${gapClass}">
+                                    <div class="inline-flex flex-row items-baseline gap-1.5">
+                                        <span class="${labelFont} font-bold tracking-wider text-neutral-500 uppercase">ORDER NO.</span>
+                                        <span class="${orderFont} font-extrabold text-black tracking-wide whitespace-nowrap">
+                                            ${escapeHtml(item.orderNo)}
+                                        </span>
+                                    </div>
+
+                                    <span class="inline-block ${sepWidth} border-t-2 border-black/40 shrink-0 self-center"></span>
+
+                                    <div class="inline-flex flex-row items-baseline gap-1.5">
+                                        <span class="${labelFont} font-bold tracking-wider text-neutral-500 uppercase">ITEM NO.</span>
+                                        <span class="${itemFont} font-extrabold text-black tracking-wide whitespace-nowrap">
+                                            ${escapeHtml(item.itemNo || '-')}
+                                        </span>
+                                    </div>
+
+                                    <span class="inline-block ${sepWidth} border-t-2 border-black/40 shrink-0 self-center"></span>
+
+                                    <div class="inline-flex flex-row items-baseline gap-1.5">
+                                        <span class="${labelFont} font-bold tracking-wider text-neutral-500 uppercase">COLOR</span>
+                                        <span class="${colorFont} font-black text-black tracking-wider whitespace-nowrap">
+                                            ${escapeHtml(item.color)}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 底部極小留白 -->
+                            <div class="h-1 shrink-0"></div>
+                        </div>
+                    `;
+                } else {
+                    // 【橫向排版】動態根據欄寬與英文字母長度縮放字體，保持單字完整
+                    const estCharRatio = approxColWidth / Math.max(itemMaxLen, 6);
+                    let orderFont = 'text-2xl';
+                    let itemFont = 'text-2xl';
+                    let colorFont = 'text-3xl';
+
+                    if (estCharRatio < 13) {
+                        orderFont = 'text-base';
+                        itemFont = 'text-base';
+                        colorFont = 'text-lg';
+                    } else if (estCharRatio < 17) {
+                        orderFont = 'text-lg';
+                        itemFont = 'text-lg';
+                        colorFont = 'text-xl';
+                    } else if (estCharRatio < 22) {
+                        orderFont = 'text-xl';
+                        itemFont = 'text-xl';
+                        colorFont = 'text-2xl';
+                    }
+
+                    return `
+                        <div class="cargo-block h-full flex-1 flex flex-col items-center justify-between py-6 px-2 text-center select-none overflow-hidden">
+                            
+                            <!-- 上方：入櫃順序編號 -->
+                            <div class="w-full flex justify-center shrink-0">
+                                <span class="inline-flex items-center justify-center w-9 h-9 rounded-full border-2 border-black text-black font-black text-base">
+                                    ${idx + 1}
+                                </span>
+                            </div>
+
+                            <!-- 中間核心資訊：ORDER NO. / ITEM NO. / COLOR -->
+                            <div class="my-auto w-full flex flex-col items-center justify-center gap-3 px-1">
+                                <div class="w-full">
+                                    <div class="text-[11px] font-bold tracking-widest text-neutral-500 uppercase mb-0.5">ORDER NO.</div>
+                                    <div class="${orderFont} font-extrabold text-black leading-tight whitespace-nowrap">
+                                        ${escapeHtml(item.orderNo)}
+                                    </div>
+                                </div>
+
+                                <div class="w-10 border-t-2 border-black/25"></div>
+
+                                <div class="w-full">
+                                    <div class="text-[11px] font-bold tracking-widest text-neutral-500 uppercase mb-0.5">ITEM NO.</div>
+                                    <div class="${itemFont} font-extrabold text-black leading-tight whitespace-nowrap">
+                                        ${escapeHtml(item.itemNo || '-')}
+                                    </div>
+                                </div>
+
+                                <div class="w-10 border-t-2 border-black/25"></div>
+
+                                <div class="w-full">
+                                    <div class="text-[11px] font-bold tracking-widest text-neutral-500 uppercase mb-0.5">COLOR</div>
+                                    <div class="${colorFont} font-black text-black leading-tight tracking-wide break-words">
+                                        ${escapeHtml(item.color)}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 底部平衡留白 -->
+                            <div class="h-3 shrink-0"></div>
+                        </div>
+                    `;
+                }
+            }).join('');
+        }
+
+        // 防範 XSS 字元跳脫
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        // 自動縮放預覽畫布，讓 1122x793 的 A4 橫向紙張完美適應各種螢幕寬度
+        function adjustPreviewScale() {
+            const wrapper = document.getElementById('preview-wrapper');
+            const sheet = document.getElementById('a4-sheet');
+            if (!wrapper || !sheet) return;
+
+            const availableWidth = wrapper.clientWidth - 36; // 扣除內距
+            const sheetWidth = 1122;
+            const sheetHeight = 793;
+
+            const scale = Math.min(1, availableWidth / sheetWidth);
+            sheet.style.transform = `scale(${scale})`;
+            sheet.style.transformOrigin = 'top center';
+            wrapper.style.height = `${Math.ceil(sheetHeight * scale) + 36}px`;
+        }
+
+        // 一鍵直接下載 A4 橫向 PDF 檔（使用獨立座標 (0,0) 克隆畫布，徹底解決 Flex 置中與捲軸造成的 PDF 左側裁切問題）
+        async function downloadPDF() {
+            if (loadItems.length === 0) {
+                showToast('請先加入至少一筆入櫃資料再下載 PDF');
+                return;
+            }
+
+            const btn = document.getElementById('btn-download-pdf');
+            const btnText = document.getElementById('download-btn-text');
+            const sheet = document.getElementById('a4-sheet');
+
+            btn.disabled = true;
+            btnText.textContent = '正在產生 PDF...';
+
+            // 建立一個固定在畫面頂部 (0,0) 的獨立擷取容器，避免受預覽區縮放、Flexbox 偏移或捲軸位置影響
+            const exportContainer = document.createElement('div');
+            exportContainer.style.position = 'fixed';
+            exportContainer.style.top = '0';
+            exportContainer.style.left = '0';
+            exportContainer.style.width = '1122px';
+            exportContainer.style.height = '793px';
+            exportContainer.style.zIndex = '-9999';
+            exportContainer.style.backgroundColor = '#ffffff';
+            exportContainer.style.overflow = 'hidden';
+            exportContainer.style.pointerEvents = 'none';
+
+            // 複製一份完整的 A4 畫布並重設為 1:1 原始大小
+            const clonedSheet = sheet.cloneNode(true);
+            clonedSheet.style.transform = 'none';
+            clonedSheet.style.margin = '0';
+            clonedSheet.style.width = '1122px';
+            clonedSheet.style.height = '793px';
+            clonedSheet.classList.remove('shadow-2xl');
+
+            exportContainer.appendChild(clonedSheet);
+            document.body.appendChild(exportContainer);
+
+            try {
+                // 等待字型與 DOM 完整渲染
+                await new Promise(resolve => setTimeout(resolve, 120));
+
+                // 以第一筆訂單號碼命名檔案
+                const firstOrder = loadItems[0]?.orderNo ? loadItems[0].orderNo.replace(/[^a-zA-Z0-9_-]/g, '_') : 'Container';
+                const fileName = `LOAD_PLAN_${firstOrder}.pdf`;
+
+                const opt = {
+                    margin:       0,
+                    filename:     fileName,
+                    image:        { type: 'jpeg', quality: 1.0 },
+                    html2canvas:  { 
+                        scale: 2, // 2倍高解析度，確保黑白列印字體與灰色虛線銳利清晰
+                        useCORS: true,
+                        backgroundColor: '#ffffff',
+                        scrollX: 0,
+                        scrollY: 0,
+                        x: 0,
+                        y: 0,
+                        width: 1122,
+                        height: 793,
+                        windowWidth: 1122,
+                        windowHeight: 793
+                    },
+                    jsPDF:        { 
+                        unit: 'px', 
+                        format: [1122, 793], 
+                        orientation: 'landscape',
+                        hotfixes: ['px_scaling']
+                    }
+                };
+
+                await html2pdf().set(opt).from(clonedSheet).save();
+                showToast(`已成功下載 ${fileName}`);
+            } catch (err) {
+                console.error('PDF 產生失敗:', err);
+                showToast('下載發生問題，正在開啟系統列印轉存 PDF...');
+                window.print();
+            } finally {
+                // 移除暫存擷取容器並恢復按鈕狀態
+                if (exportContainer.parentNode) {
+                    exportContainer.parentNode.removeChild(exportContainer);
+                }
+                btn.disabled = false;
+                btnText.textContent = '一鍵下載 PDF 檔';
+            }
+        }
+
+        // 整合渲染所有畫面
+        function renderAll() {
+            renderCatalogUI();
+            renderControlList();
+            renderA4Preview();
+            adjustPreviewScale();
+        }
+
+        // 視窗載入與尺寸變更時自動調整預覽比例
+        window.addEventListener('resize', adjustPreviewScale);
+        window.onload = function () {
+            // 預設保持 ITEM NO. 輸入欄與入櫃清單空白，方便直接開始輸入
+            const itemInput = document.getElementById('input-item-no');
+            if (itemInput) itemInput.value = '';
+            renderAll();
+        };
+    </script>
+</body>
+</html>
